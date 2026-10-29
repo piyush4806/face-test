@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Face Test</title>
+</head>
+<body>
+  <h1>Face Test</h1>
+  <video id="video" autoplay playsinline muted width="640" height="480"></video>
+  <p id="status">Loading the face model, please wait...</p>
+
+  <script type="module">
+    import {
+      FaceLandmarker,
+      FilesetResolver
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+    const video = document.getElementById("video");
+    const status = document.getElementById("status");
+    let faceLandmarker = null;
+    let lastVideoTime = -1;
+
+    async function setup() {
+      // 1. Load the MediaPipe engine (the "brain" that runs in the browser)
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+
+      // 2. Create the face landmarker using a trained model file
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+        },
+        runningMode: "VIDEO",
+        numFaces: 1
+      });
+
+      status.textContent = "Model loaded. Asking for camera permission...";
+
+      // 3. Turn on the front camera
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" }
+      });
+      video.srcObject = stream;
+      video.addEventListener("loadeddata", detectLoop);
+    }
+
+    function detectLoop() {
+      // Only detect when the video frame has changed
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const result = faceLandmarker.detectForVideo(video, performance.now());
+
+        if (result.faceLandmarks.length > 0) {
+          status.textContent = "Face found! Points tracked: " + result.faceLandmarks[0].length;
+        } else {
+          status.textContent = "No face found. Look at the camera and check the lighting.";
+        }
+      }
+      // Run again on the next screen refresh
+      requestAnimationFrame(detectLoop);
+    }
+
+    setup().catch(function (err) {
+      status.textContent = "Error: " + err.message;
+    });
+  </script>
+</body>
+</html>
