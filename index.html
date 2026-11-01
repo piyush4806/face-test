@@ -3,12 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Face Test</title>
+  <title>Blink Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 10px; }
+    video { width: 100%; max-width: 640px; border-radius: 8px; transform: scaleX(-1); }
+    #status { font-size: 18px; }
+    #scores { font-family: monospace; font-size: 20px; }
+    #blinkCount { font-size: 28px; font-weight: bold; color: #0a7d2c; }
+    #flash { font-size: 32px; font-weight: bold; color: #d00; height: 40px; }
+  </style>
 </head>
 <body>
-  <h1>Face Test</h1>
-  <video id="video" autoplay playsinline muted width="640" height="480"></video>
+  <h1>Blink Test</h1>
+  <video id="video" autoplay playsinline muted></video>
   <p id="status">Loading the face model, please wait...</p>
+  <p id="scores">Left eye: - | Right eye: -</p>
+  <p>Blinks counted: <span id="blinkCount">0</span></p>
+  <p id="flash"></p>
 
   <script type="module">
     import {
@@ -16,30 +27,42 @@
       FilesetResolver
     } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
+    const BLINK_THRESHOLD = 0.5;   // 0 = eye fully open, 1 = fully closed
+    const COOLDOWN_MS = 600;       // ignore extra blinks for 0.6 seconds
+
     const video = document.getElementById("video");
-    const status = document.getElementById("status");
+    const statusEl = document.getElementById("status");
+    const scoresEl = document.getElementById("scores");
+    const countEl = document.getElementById("blinkCount");
+    const flashEl = document.getElementById("flash");
+
     let faceLandmarker = null;
     let lastVideoTime = -1;
+    let blinkCount = 0;
+    let lastBlinkTime = 0;
+
+    function getScore(shapes, name) {
+      const item = shapes.find(function (s) { return s.categoryName === name; });
+      return item ? item.score : 0;
+    }
 
     async function setup() {
-      // 1. Load the MediaPipe engine (the "brain" that runs in the browser)
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
       );
 
-      // 2. Create the face landmarker using a trained model file
       faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath:
             "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
         },
         runningMode: "VIDEO",
-        numFaces: 1
+        numFaces: 1,
+        outputFaceBlendshapes: true
       });
 
-      status.textContent = "Model loaded. Asking for camera permission...";
+      statusEl.textContent = "Model loaded. Asking for camera permission...";
 
-      // 3. Turn on the front camera
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" }
       });
@@ -48,23 +71,39 @@
     }
 
     function detectLoop() {
-      // Only detect when the video frame has changed
       if (video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
         const result = faceLandmarker.detectForVideo(video, performance.now());
 
-        if (result.faceLandmarks.length > 0) {
-          status.textContent = "Face found! Points tracked: " + result.faceLandmarks[0].length;
+        if (result.faceLandmarks.length > 0 && result.faceBlendshapes.length > 0) {
+          const shapes = result.faceBlendshapes[0].categories;
+          const left = getScore(shapes, "eyeBlinkLeft");
+          const right = getScore(shapes, "eyeBlinkRight");
+
+          scoresEl.textContent =
+            "Left eye: " + left.toFixed(2) + " | Right eye: " + right.toFixed(2);
+          statusEl.textContent = "Face found. Blink normally to count blinks.";
+
+          const bothClosed = left > BLINK_THRESHOLD && right > BLINK_THRESHOLD;
+          const now = Date.now();
+
+          if (bothClosed && now - lastBlinkTime > COOLDOWN_MS) {
+            lastBlinkTime = now;
+            blinkCount++;
+            countEl.textContent = blinkCount;
+            flashEl.textContent = "BLINK!";
+            setTimeout(function () { flashEl.textContent = ""; }, 400);
+          }
         } else {
-          status.textContent = "No face found. Look at the camera and check the lighting.";
+          statusEl.textContent = "No face found. Look at the camera and check the lighting.";
+          scoresEl.textContent = "Left eye: - | Right eye: -";
         }
       }
-      // Run again on the next screen refresh
       requestAnimationFrame(detectLoop);
     }
 
     setup().catch(function (err) {
-      status.textContent = "Error: " + err.message;
+      statusEl.textContent = "Error: " + err.message;
     });
   </script>
 </body>
