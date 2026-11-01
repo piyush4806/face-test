@@ -27,7 +27,9 @@
       FilesetResolver
     } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
-    const BLINK_THRESHOLD = 0.5;   // 0 = eye fully open, 1 = fully closed
+    const CLOSE_THRESHOLD = 0.6;   // eyes count as CLOSED when score goes above this
+    const OPEN_THRESHOLD = 0.4;    // eyes count as OPEN again when score drops below this
+    const MIN_GAP_MS = 400;        // never count two blinks closer than this
 
     const video = document.getElementById("video");
     const statusEl = document.getElementById("status");
@@ -38,7 +40,8 @@
     let faceLandmarker = null;
     let lastVideoTime = -1;
     let blinkCount = 0;
-    let eyesWereClosed = false;   // remembers the previous state
+    let eyesClosed = false;        // current state: are the eyes closed?
+    let lastBlinkTime = 0;
 
     function getScore(shapes, name) {
       const item = shapes.find(function (s) { return s.categoryName === name; });
@@ -78,22 +81,28 @@
           const shapes = result.faceBlendshapes[0].categories;
           const left = getScore(shapes, "eyeBlinkLeft");
           const right = getScore(shapes, "eyeBlinkRight");
+          const now = Date.now();
 
           scoresEl.textContent =
             "Left eye: " + left.toFixed(2) + " | Right eye: " + right.toFixed(2);
           statusEl.textContent = "Face found. Blink normally to count blinks.";
 
-          const bothClosed = left > BLINK_THRESHOLD && right > BLINK_THRESHOLD;
-
-          if (bothClosed && !eyesWereClosed) {
-            // Eyes just closed: count one blink
-            blinkCount++;
-            countEl.textContent = blinkCount;
-            flashEl.textContent = "BLINK!";
-            setTimeout(function () { flashEl.textContent = ""; }, 400);
+          if (!eyesClosed) {
+            // Eyes are open: they only count as closed when BOTH go above the close threshold
+            if (left > CLOSE_THRESHOLD && right > CLOSE_THRESHOLD && now - lastBlinkTime > MIN_GAP_MS) {
+              eyesClosed = true;
+              lastBlinkTime = now;
+              blinkCount++;
+              countEl.textContent = blinkCount;
+              flashEl.textContent = "BLINK!";
+              setTimeout(function () { flashEl.textContent = ""; }, 400);
+            }
+          } else {
+            // Eyes are closed: they only count as open when BOTH drop below the open threshold
+            if (left < OPEN_THRESHOLD && right < OPEN_THRESHOLD) {
+              eyesClosed = false;
+            }
           }
-          // Remember whether the eyes are closed now
-          eyesWereClosed = bothClosed;
         } else {
           statusEl.textContent = "No face found. Look at the camera and check the lighting.";
           scoresEl.textContent = "Left eye: - | Right eye: -";
