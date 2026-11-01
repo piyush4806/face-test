@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 10px; }
+    video { width: 100%; max-width: 640px; border-radius: 8px; transform: scaleX(-1); }
+    #status { font-size: 18px; }
+    #scores { font-family: monospace; font-size: 20px; }
+    #eyeState { font-size: 20px; font-weight: bold; }
+    #blinkCount { font-size: 28px; font-weight: bold; color: #0a7d2c; }
+    #flash { font-size: 32px; font-weight: bold; color: #d00; height: 40px; }
+  </style>
+</head>
+<body>
+  <h1>Blink Test</h1>
+  <video id="video" autoplay playsinline muted></video>
+  <p id="status">Loading the face model, please wait...</p>
+  <p id="scores">Left eye: - | Right eye: -</p>
+  <p>Eyes: <span id="eyeState">-</span></p>
+  <p>Blinks counted: <span id="blinkCount">0</span></p>
+  <p id="flash"></p>
+
+  <script type="module">
+    import {
+      FaceLandmarker,
+      FilesetResolver
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+    const CLOSE_LEVEL = 0.55;      // both eyes above this = closed
+    const OPEN_LEVEL = 0.35;       // both eyes below this = open again
+    const MIN_BLINK_MS = 60;       // closed for less than this = noise, not a blink
+    const MAX_BLINK_MS = 700;      // closed for longer than this = not a blink
+    const SMOOTH_FRAMES = 3;       // average of the last 3 readings
+
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const scoresEl = document.getElementById("scores");
+    const eyeStateEl = document.getElementById("eyeState");
+    const countEl = document.getElementById("blinkCount");
+    const flashEl = document.getElementById("flash");
+
+    let faceLandmarker = null;
+    let lastVideoTime = -1;
+    let blinkCount = 0;
+    let eyesClosed = false;
+    let closedAt = 0;
+    let leftHistory = [];
+    let rightHistory = [];
+
+    function getScore(shapes, name) {
+      const item = shapes.find(function (s) { return s.categoryName === name; });
+      return item ? item.score : 0;
+    }
+
+    function average(list) {
+      let sum = 0;
+      for (let i = 0; i < list.length; i++) { sum += list[i]; }
+      return sum / list.length;
+    }
+
+    async function setup() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        outputFaceBlendshapes: true
+      });
+
+      statusEl.textContent = "Model loaded. Asking for camera permission...";
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" }
+      });
+      video.srcObject = stream;
+      video.addEventListener("loadeddata", detectLoop);
+    }
+
+    function detectLoop() {
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const result = faceLandmarker.detectForVideo(video, performance.now());
+
+        if (result.faceLandmarks.length > 0 && result.faceBlendshapes.length > 0) {
+          const shapes = result.faceBlendshapes[0].categories;
+          const now = Date.now();
+
+          // Smooth the readings: keep only the last few frames
+          leftHistory.push(getScore(shapes, "eyeBlinkLeft"));
+          rightHistory.push(getScore(shapes, "eyeBlinkRight"));
+          if (leftHistory.length > SMOOTH_FRAMES) { leftHistory.shift(); }
+          if (rightHistory.length > SMOOTH_FRAMES) { rightHistory.shift(); }
+
+          const left = average(leftHistory);
+          const right = average(rightHistory);
+
+          scoresEl.textContent =
+            "Left eye: " + left.toFixed(2) + " | Right eye: " + right.toFixed(2);
+          statusEl.textContent = "Face found.";
+
+          if (!eyesClosed) {
+            // Eyes open: switch to closed only when BOTH eyes are clearly closed
+            if (left > CLOSE_LEVEL && right > CLOSE_LEVEL) {
+              eyesClosed = true;
+              closedAt = now;
+              eyeStateEl.textContent = "CLOSED";
+            } else {
+              eyeStateEl.textContent = "open";
+            }
+          } else {
+            // Eyes closed: switch back to open only when BOTH eyes are clearly open
+            if (left < OPEN_LEVEL && right < OPEN_LEVEL) {
+              eyesClosed = false;
+              const closedFor = now - closedAt;
+              eyeStateEl.textContent = "open";
+
+              if (closedFor >= MIN_BLINK_MS && closedFor <= MAX_BLINK_MS) {
+                blinkCount++;
+                countEl.textContent = blinkCount;
+                flashEl.textContent = "BLINK!";
+                setTimeout(function () { flashEl.textContent = ""; }, 400);
+              } else if (closedFor > MAX_BLINK_MS) {
+                statusEl.textContent = "Eyes were closed too long (" + Math.round(closedFor / 1000) + " s). Not counted.";
+              }
+            } else {
+              eyeStateEl.textContent = "CLOSED";
+            }
+          }
+        } else {
+          statusEl.textContent = "No face found. Look at the camera and check the lighting.";
+          scoresEl.textContent = "Left eye: - | Right eye: -";
+          eyesClosed = false;
+          leftHistory = [];
+          rightHistory = [];
+        }
+      }
+      requestAnimationFrame(detectLoop);
+    }
+
+    setup().catch(function (err) {
+      statusEl.textContent = "Error: " + err.message;
+    });
+  </script>
+</body>
+</html>
