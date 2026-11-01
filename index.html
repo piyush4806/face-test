@@ -28,7 +28,6 @@
     } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
     const BLINK_THRESHOLD = 0.5;   // 0 = eye fully open, 1 = fully closed
-    const COOLDOWN_MS = 600;       // ignore extra blinks for 0.6 seconds
 
     const video = document.getElementById("video");
     const statusEl = document.getElementById("status");
@@ -39,7 +38,7 @@
     let faceLandmarker = null;
     let lastVideoTime = -1;
     let blinkCount = 0;
-    let lastBlinkTime = 0;
+    let eyesWereClosed = false;   // remembers the previous state
 
     function getScore(shapes, name) {
       const item = shapes.find(function (s) { return s.categoryName === name; });
@@ -85,15 +84,16 @@
           statusEl.textContent = "Face found. Blink normally to count blinks.";
 
           const bothClosed = left > BLINK_THRESHOLD && right > BLINK_THRESHOLD;
-          const now = Date.now();
 
-          if (bothClosed && now - lastBlinkTime > COOLDOWN_MS) {
-            lastBlinkTime = now;
+          if (bothClosed && !eyesWereClosed) {
+            // Eyes just closed: count one blink
             blinkCount++;
             countEl.textContent = blinkCount;
             flashEl.textContent = "BLINK!";
             setTimeout(function () { flashEl.textContent = ""; }, 400);
           }
+          // Remember whether the eyes are closed now
+          eyesWereClosed = bothClosed;
         } else {
           statusEl.textContent = "No face found. Look at the camera and check the lighting.";
           scoresEl.textContent = "Left eye: - | Right eye: -";
