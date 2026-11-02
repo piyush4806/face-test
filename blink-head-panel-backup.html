@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink and Head Button Panel</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 10px; }
+    video { width: 100%; max-width: 480px; border-radius: 8px; transform: scaleX(-1); }
+    #status { font-size: 18px; }
+    #scores { font-family: monospace; font-size: 18px; }
+    #eyeState { font-size: 18px; font-weight: bold; }
+    #panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      max-width: 480px;
+      margin: 15px auto;
+    }
+    .opt {
+      font-size: 24px;
+      padding: 25px 10px;
+      border: 4px solid #1a4fd6;
+      border-radius: 12px;
+      background: #e8efff;
+      color: #000;
+    }
+    .opt.highlight { background: #ffd54a; border-color: #b58900; }
+    .opt.hover { border-style: dashed; border-color: #d00; }
+    .opt.selected { background: #2e9e4f; color: #fff; border-color: #1b6e35; }
+    #result { font-size: 26px; font-weight: bold; color: #1b6e35; min-height: 36px; }
+    #blinkCount { font-weight: bold; color: #0a7d2c; }
+    #cursor {
+      position: fixed;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: rgba(255, 0, 0, 0.7);
+      pointer-events: none;
+      z-index: 10;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Blink and Head Button Panel</h1>
+  <video id="video" autoplay playsinline muted></video>
+  <p id="status">Loading the face model, please wait...</p>
+  <p id="scores">Left eye: - | Right eye: -</p>
+  <p>Eyes: <span id="eyeState">-</span></p>
+
+  <div id="panel">
+    <div class="opt" data-label="Yes">Yes</div>
+    <div class="opt" data-label="No">No</div>
+    <div class="opt" data-label="Help">Help</div>
+    <div class="opt" data-label="Next">Next</div>
+  </div>
+
+  <p id="result">Waiting for a blink or a hold to choose...</p>
+  <p>Blinks counted: <span id="blinkCount">0</span></p>
+  <div id="cursor"></div>
+
+  <script type="module">
+    import {
+      FaceLandmarker,
+      FilesetResolver
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+    const CLOSE_LEVEL = 0.55;
+    const OPEN_LEVEL = 0.35;
+    const MIN_BLINK_MS = 60;
+    const MAX_BLINK_MS = 700;
+    const SMOOTH_FRAMES = 3;
+    const SCAN_MS = 1200;
+    const PAUSE_AFTER_SELECT_MS = 2000;
+    const DWELL_MS = 1500;         // hold the red dot on a button this long to select it
+    const GAIN = 2.0;              // how far the dot moves for each head movement
+
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const scoresEl = document.getElementById("scores");
+    const eyeStateEl = document.getElementById("eyeState");
+    const countEl = document.getElementById("blinkCount");
+    const resultEl = document.getElementById("result");
+    const cursorEl = document.getElementById("cursor");
+    const options = Array.from(document.querySelectorAll(".opt"));
+
+    let faceLandmarker = null;
+    let lastVideoTime = -1;
+    let blinkCount = 0;
+    let eyesClosed = false;
+    let closedAt = 0;
+    let leftHistory = [];
+    let rightHistory = [];
+
+    let highlightIndex = 0;
+    let scanning = true;
+
+    let hoverIndex = -1;
+    let hoverStart = 0;
+
+    function highlight(i) {
+      options.forEach(function (el, idx) {
+        el.classList.toggle("highlight", idx === i);
+      });
+    }
+
+    function scanStep() {
+      if (!scanning) { return; }
+      highlightIndex = (highlightIndex + 1) % options.length;
+      highlight(highlightIndex);
+    }
+
+    // Choose any option by its position (used by both blink and hold)
+    function selectOption(i) {
+      if (!scanning) { return; }   // ignore while the pause is running
+      scanning = false;
+
+      const chosen = options[i];
+      highlight(-1);
+      clearHover();
+      chosen.classList.add("selected");
+      resultEl.textContent = "You chose: " + chosen.dataset.label;
+
+      setTimeout(function () {
+        chosen.classList.remove("selected");
+        highlightIndex = 0;
+        highlight(0);
+        scanning = true;
+      }, PAUSE_AFTER_SELECT_MS);
+    }
+
+    function clearHover() {
+      hoverIndex = -1;
+      hoverStart = 0;
+      options.forEach(function (el) { el.classList.remove("hover"); });
+    }
+
+    function clamp(value) {
+      return Math.min(1, Math.max(0, value));
+    }
+
+    // Move the red dot to follow the nose tip, then check for a hold on a button
+    function updateCursor(nose, now) {
+      const mirroredX = 1 - nose.x;               // video is mirrored on screen
+      const sx = clamp(0.5 + (mirroredX - 0.5) * GAIN);
+      const sy = clamp(0.5 + (nose.y - 0.5) * GAIN);
+      const x = sx * window.innerWidth;
+      const y = sy * window.innerHeight;
+
+      cursorEl.style.display = "block";
+      cursorEl.style.left = (x - 10) + "px";
+      cursorEl.style.top = (y - 10) + "px";
+
+      let hit = -1;
+      options.forEach(function (el, idx) {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          hit = idx;
+        }
+      });
+
+      if (hit === -1 || !scanning) {
+        clearHover();
+        return;
+      }
+
+      if (hit !== hoverIndex) {
+        clearHover();
+        hoverIndex = hit;
+        hoverStart = now;
+        options[hit].classList.add("hover");
+      }
+
+      const heldFor = now - hoverStart;
+      statusEl.textContent = "Hold still on the button: " + Math.round(heldFor / 100) / 10 + " s";
+
+      if (heldFor >= DWELL_MS) {
+        selectOption(hit);
+      }
+    }
+
+    function getScore(shapes, name) {
+      const item = shapes.find(function (s) { return s.categoryName === name; });
+      return item ? item.score : 0;
+    }
+
+    function average(list) {
+      let sum = 0;
+      for (let i = 0; i < list.length; i++) { sum += list[i]; }
+      return sum / list.length;
+    }
+
+    async function setup() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        outputFaceBlendshapes: true
+      });
+
+      statusEl.textContent = "Model loaded. Asking for camera permission...";
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" }
+      });
+      video.srcObject = stream;
+      video.addEventListener("loadeddata", detectLoop);
+    }
+
+    function detectLoop() {
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const result = faceLandmarker.detectForVideo(video, performance.now());
+
+        if (result.faceLandmarks.length > 0 && result.faceBlendshapes.length > 0) {
+          const shapes = result.faceBlendshapes[0].categories;
+          const now = Date.now();
+
+          leftHistory.push(getScore(shapes, "eyeBlinkLeft"));
+          rightHistory.push(getScore(shapes, "eyeBlinkRight"));
+          if (leftHistory.length > SMOOTH_FRAMES) { leftHistory.shift(); }
+          if (rightHistory.length > SMOOTH_FRAMES) { rightHistory.shift(); }
+
+          const left = average(leftHistory);
+          const right = average(rightHistory);
+
+          scoresEl.textContent =
+            "Left eye: " + left.toFixed(2) + " | Right eye: " + right.toFixed(2);
+
+          // Head pointer and hold-to-select
+          updateCursor(result.faceLandmarks[0][1], now);
+
+          if (!eyesClosed) {
+            if (left > CLOSE_LEVEL && right > CLOSE_LEVEL) {
+              eyesClosed = true;
+              closedAt = now;
+              eyeStateEl.textContent = "CLOSED";
+            } else {
+              eyeStateEl.textContent = "open";
+            }
+          } else {
+            if (left < OPEN_LEVEL && right < OPEN_LEVEL) {
+              eyesClosed = false;
+              const closedFor = now - closedAt;
+              eyeStateEl.textContent = "open";
+
+              if (closedFor >= MIN_BLINK_MS && closedFor <= MAX_BLINK_MS) {
+                blinkCount++;
+                countEl.textContent = blinkCount;
+                selectOption(highlightIndex);
+              } else if (closedFor > MAX_BLINK_MS) {
+                statusEl.textContent = "Eyes were closed too long (" + Math.round(closedFor / 1000) + " s). Not counted.";
+              }
+            } else {
+              eyeStateEl.textContent = "CLOSED";
+            }
+          }
+        } else {
+          statusEl.textContent = "No face found. Look at the camera and check the lighting.";
+          scoresEl.textContent = "Left eye: - | Right eye: -";
+          cursorEl.style.display = "none";
+          clearHover();
+          eyesClosed = false;
+          leftHistory = [];
+          rightHistory = [];
+        }
+      }
+      requestAnimationFrame(detectLoop);
+    }
+
+    highlight(0);
+    setInterval(scanStep, SCAN_MS);
+
+    setup().catch(function (err) {
+      statusEl.textContent = "Error: " + err.message;
+    });
+  </script>
+</body>
+</html>
