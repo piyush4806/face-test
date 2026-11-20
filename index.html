@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Blink and Head Button Panel</title>
+  <title>Head Cursor Whole Page</title>
   <style>
     body { font-family: Arial, sans-serif; text-align: center; padding: 10px; }
+    body.big { font-size: 24px; }
     video { width: 100%; max-width: 480px; border-radius: 8px; transform: scaleX(-1); }
     #status { font-size: 18px; }
     #scores { font-family: monospace; font-size: 18px; }
@@ -18,17 +19,27 @@
       max-width: 480px;
       margin: 15px auto;
     }
-    .opt {
+    .opt, #extras button {
       font-size: 24px;
       padding: 25px 10px;
       border: 4px solid #1a4fd6;
       border-radius: 12px;
       background: #e8efff;
       color: #000;
+      cursor: pointer;
     }
+    #extras {
+      max-width: 480px;
+      margin: 10px auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    #extras button { border-color: #555; background: #f7f7f7; }
+    body.big .opt, body.big #extras button { font-size: 32px; }
     .opt.highlight { background: #ffd54a; border-color: #b58900; }
-    .opt.hover { border-style: dashed; border-color: #d00; }
-    .opt.selected { background: #2e9e4f; color: #fff; border-color: #1b6e35; }
+    .clickable.hover { border-style: dashed; border-color: #d00; }
+    .clickable.selected { background: #2e9e4f; color: #fff; border-color: #1b6e35; }
     #result { font-size: 26px; font-weight: bold; color: #1b6e35; min-height: 36px; }
     #blinkCount { font-weight: bold; color: #0a7d2c; }
     #cursor {
@@ -63,18 +74,23 @@
   </style>
 </head>
 <body>
-  <h1>Blink and Head Button Panel</h1>
+  <h1>Head Cursor Whole Page</h1>
   <video id="video" autoplay playsinline muted></video>
   <p id="status">Loading the face model, please wait...</p>
   <p id="scores">Left eye: - | Right eye: -</p>
   <p>Eyes: <span id="eyeState">-</span></p>
-  <p id="help">Choose a button by blinking or holding the red dot on it. Then blink once to confirm within 4 seconds.</p>
+  <p id="help">Point the red dot at any button and hold still, then blink to confirm within 4 seconds. You can also wait for the yellow highlight and blink.</p>
 
   <div id="panel">
-    <div class="opt" data-label="Yes">Yes</div>
-    <div class="opt" data-label="No">No</div>
-    <div class="opt" data-label="Help">Help</div>
-    <div class="opt" data-label="Next">Next</div>
+    <div class="opt clickable" data-label="Yes">Yes</div>
+    <div class="opt clickable" data-label="No">No</div>
+    <div class="opt clickable" data-label="Help">Help</div>
+    <div class="opt clickable" data-label="Next">Next</div>
+  </div>
+
+  <div id="extras">
+    <button class="clickable" id="bigBtn" data-label="Bigger text">Bigger text</button>
+    <button class="clickable" id="scrollBtn" data-label="Scroll down">Scroll down</button>
   </div>
 
   <p id="result">Waiting for a blink or a hold to choose...</p>
@@ -126,7 +142,8 @@
     const MAX_BLINK_MS = 700;
     const SMOOTH_FRAMES = 3;
     const PAUSE_AFTER_SELECT_MS = 2000;
-    const CONFIRM_MS = 4000;       // time the user has to blink and confirm a choice
+    const CONFIRM_MS = 4000;
+    const SCROLL_STEP_PX = 300;
 
     let CLOSE_LEVEL = DEFAULTS.blink;
     let OPEN_LEVEL = DEFAULTS.blink - 0.20;
@@ -141,7 +158,7 @@
     const countEl = document.getElementById("blinkCount");
     const resultEl = document.getElementById("result");
     const cursorEl = document.getElementById("cursor");
-    const options = Array.from(document.querySelectorAll(".opt"));
+    const panelOptions = Array.from(document.querySelectorAll("#panel .opt"));
 
     const sBlink = document.getElementById("s_blink");
     const sScan = document.getElementById("s_scan");
@@ -162,15 +179,17 @@
     let leftHistory = [];
     let rightHistory = [];
 
+    // Scanning (only the four panel buttons)
     let highlightIndex = 0;
     let scanning = true;
     let scanTimer = null;
 
-    let hoverIndex = -1;
+    // Head pointer hover (any element marked clickable)
+    let hoverEl = null;
     let hoverStart = 0;
 
     // Confirmation state
-    let pendingIndex = -1;        // button waiting for confirmation, or -1
+    let pendingEl = null;
     let confirmDeadline = 0;
     let countdownTimer = null;
     let cancelTimer = null;
@@ -282,46 +301,40 @@
       reader.readAsText(file);
     }
 
-    // ---------- Scanning, choosing, and confirming ----------
+    // ---------- Scanning ----------
 
     function highlight(i) {
-      options.forEach(function (el, idx) {
+      panelOptions.forEach(function (el, idx) {
         el.classList.toggle("highlight", idx === i);
       });
     }
 
     function scanStep() {
       if (!scanning) { return; }
-      highlightIndex = (highlightIndex + 1) % options.length;
+      highlightIndex = (highlightIndex + 1) % panelOptions.length;
       highlight(highlightIndex);
     }
 
+    // ---------- Hover and target finding ----------
+
     function clearHover() {
-      hoverIndex = -1;
+      if (hoverEl) { hoverEl.classList.remove("hover"); }
+      hoverEl = null;
       hoverStart = 0;
-      options.forEach(function (el) { el.classList.remove("hover"); });
     }
+
+    // Finds the clickable element under a point on the whole page
+    function findTarget(x, y) {
+      const el = document.elementFromPoint(x, y);
+      return el ? el.closest(".clickable") : null;
+    }
+
+    // ---------- Confirmation ----------
 
     function updateCountdown() {
       const secs = Math.max(0, Math.ceil((confirmDeadline - Date.now()) / 1000));
-      resultEl.textContent = "Selected: " + options[pendingIndex].dataset.label +
+      resultEl.textContent = "Selected: " + pendingEl.dataset.label +
         ". Blink to confirm (" + secs + " s)";
-    }
-
-    // Step 1: a button is chosen, but nothing is sent yet
-    function askConfirm(i) {
-      if (!scanning) { return; }   // ignore while a choice is pending or in the pause
-      scanning = false;
-      pendingIndex = i;
-
-      highlight(-1);
-      clearHover();
-      options[i].classList.add("selected");
-
-      confirmDeadline = Date.now() + CONFIRM_MS;
-      updateCountdown();
-      countdownTimer = setInterval(updateCountdown, 250);
-      cancelTimer = setTimeout(cancelPending, CONFIRM_MS);
     }
 
     function clearConfirmTimers() {
@@ -329,28 +342,46 @@
       if (cancelTimer !== null) { clearTimeout(cancelTimer); cancelTimer = null; }
     }
 
-    // Step 2a: the user blinks in time, so the choice is confirmed
-    function confirmPending() {
-      clearConfirmTimers();
-      const chosen = options[pendingIndex];
-      pendingIndex = -1;
-      resultEl.textContent = "You chose: " + chosen.dataset.label;
+    // Step 1: a target is chosen, but nothing is clicked yet
+    function askConfirm(el) {
+      if (!scanning || !el) { return; }
+      scanning = false;
+      pendingEl = el;
 
+      highlight(-1);
+      clearHover();
+      el.classList.add("selected");
+
+      confirmDeadline = Date.now() + CONFIRM_MS;
+      updateCountdown();
+      countdownTimer = setInterval(updateCountdown, 250);
+      cancelTimer = setTimeout(cancelPending, CONFIRM_MS);
+    }
+
+    function resumeScanning(el) {
       setTimeout(function () {
-        chosen.classList.remove("selected");
+        el.classList.remove("selected");
         highlightIndex = 0;
         highlight(0);
         scanning = true;
       }, PAUSE_AFTER_SELECT_MS);
     }
 
+    // Step 2a: the user blinks in time, so the click happens
+    function confirmPending() {
+      const el = pendingEl;
+      pendingEl = null;
+      clearConfirmTimers();
+      resultEl.textContent = "You chose: " + el.dataset.label;
+      el.click();
+      resumeScanning(el);
+    }
+
     // Step 2b: no blink in time, so the choice is cancelled
     function cancelPending() {
+      if (pendingEl) { pendingEl.classList.remove("selected"); }
+      pendingEl = null;
       clearConfirmTimers();
-      if (pendingIndex !== -1) {
-        options[pendingIndex].classList.remove("selected");
-      }
-      pendingIndex = -1;
       resultEl.textContent = "Cancelled. Choose again.";
       highlightIndex = 0;
       highlight(0);
@@ -362,10 +393,10 @@
       blinkCount++;
       countEl.textContent = blinkCount;
 
-      if (pendingIndex !== -1) {
+      if (pendingEl) {
         confirmPending();
       } else if (scanning) {
-        askConfirm(highlightIndex);
+        askConfirm(panelOptions[highlightIndex]);
       }
     }
 
@@ -386,31 +417,25 @@
       cursorEl.style.left = (x - 10) + "px";
       cursorEl.style.top = (y - 10) + "px";
 
-      let hit = -1;
-      options.forEach(function (el, idx) {
-        const r = el.getBoundingClientRect();
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-          hit = idx;
-        }
-      });
+      const target = findTarget(x, y);
 
-      if (hit === -1 || !scanning) {
+      if (!target || !scanning) {
         clearHover();
         return;
       }
 
-      if (hit !== hoverIndex) {
+      if (target !== hoverEl) {
         clearHover();
-        hoverIndex = hit;
+        hoverEl = target;
         hoverStart = now;
-        options[hit].classList.add("hover");
+        target.classList.add("hover");
       }
 
       const heldFor = now - hoverStart;
       statusEl.textContent = "Hold still on the button: " + (Math.round(heldFor / 100) / 10) + " s";
 
       if (heldFor >= DWELL_MS) {
-        askConfirm(hit);
+        askConfirm(target);
       }
     }
 
@@ -544,6 +569,17 @@
     });
 
     importFile.addEventListener("change", handleImport);
+
+    document.getElementById("bigBtn").addEventListener("click", function () {
+      document.body.classList.toggle("big");
+      resultEl.textContent = document.body.classList.contains("big")
+        ? "Bigger text is on."
+        : "Bigger text is off.";
+    });
+
+    document.getElementById("scrollBtn").addEventListener("click", function () {
+      window.scrollBy({ top: SCROLL_STEP_PX, behavior: "smooth" });
+    });
 
     highlight(0);
 
