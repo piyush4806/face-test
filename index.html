@@ -99,6 +99,9 @@
     </p>
     <button id="saveBtn">Save settings</button>
     <button id="resetBtn">Reset to default</button>
+    <button id="exportBtn">Export settings</button>
+    <button id="importBtn">Import settings</button>
+    <input type="file" id="importFile" accept=".json,application/json" style="display:none">
     <p id="settingsMsg"></p>
   </div>
 
@@ -109,6 +112,12 @@
     } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
     const DEFAULTS = { blink: 0.55, scan: 1200, dwell: 1500, gain: 2.0 };
+    const LIMITS = {
+      blink: { min: 0.40, max: 0.80 },
+      scan: { min: 600, max: 2500 },
+      dwell: { min: 800, max: 3000 },
+      gain: { min: 1, max: 3 }
+    };
     const STORAGE_KEY = "blinkPanelSettings";
 
     const MIN_BLINK_MS = 60;
@@ -116,7 +125,6 @@
     const SMOOTH_FRAMES = 3;
     const PAUSE_AFTER_SELECT_MS = 2000;
 
-    // These change when the user moves the sliders
     let CLOSE_LEVEL = DEFAULTS.blink;
     let OPEN_LEVEL = DEFAULTS.blink - 0.20;
     let SCAN_MS = DEFAULTS.scan;
@@ -141,6 +149,7 @@
     const vDwell = document.getElementById("v_dwell");
     const vGain = document.getElementById("v_gain");
     const settingsMsg = document.getElementById("settingsMsg");
+    const importFile = document.getElementById("importFile");
 
     let faceLandmarker = null;
     let lastVideoTime = -1;
@@ -159,14 +168,31 @@
 
     // ---------- Settings ----------
 
+    // Returns a number inside the allowed range, or the default if the value is not usable
+    function safeValue(value, limit, fallback) {
+      const n = Number(value);
+      if (!isFinite(n)) { return fallback; }
+      return Math.min(limit.max, Math.max(limit.min, n));
+    }
+
+    function cleanSettings(raw) {
+      const src = raw || {};
+      return {
+        blink: safeValue(src.blink, LIMITS.blink, DEFAULTS.blink),
+        scan: Math.round(safeValue(src.scan, LIMITS.scan, DEFAULTS.scan)),
+        dwell: Math.round(safeValue(src.dwell, LIMITS.dwell, DEFAULTS.dwell)),
+        gain: safeValue(src.gain, LIMITS.gain, DEFAULTS.gain)
+      };
+    }
+
     function loadSaved() {
       try {
         const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-        if (saved) { return Object.assign({}, DEFAULTS, saved); }
+        if (saved) { return cleanSettings(saved); }
       } catch (e) {
         // ignore a damaged saved value and use the defaults
       }
-      return Object.assign({}, DEFAULTS);
+      return cleanSettings(DEFAULTS);
     }
 
     function readSliders() {
@@ -203,6 +229,51 @@
       scanTimer = setInterval(scanStep, SCAN_MS);
     }
 
+    // ---------- Export and import ----------
+
+    function exportSettings() {
+      const s = readSliders();
+      const text = JSON.stringify(s, null, 2);
+      const blob = new Blob([text], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "blink-panel-settings.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      settingsMsg.textContent = "Settings file downloaded as blink-panel-settings.json.";
+    }
+
+    function handleImport(event) {
+      const file = event.target.files[0];
+      if (!file) { return; }
+
+      const reader = new FileReader();
+      reader.onload = function () {
+        let data = null;
+        try {
+          data = JSON.parse(reader.result);
+        } catch (e) {
+          settingsMsg.textContent = "That file is not a valid settings file. Nothing was changed.";
+          importFile.value = "";
+          return;
+        }
+
+        const s = cleanSettings(data);
+        showOnSliders(s);
+        applySettings(s);
+        settingsMsg.textContent = "Settings loaded from file. Click Save settings to keep them in this browser.";
+        importFile.value = "";
+      };
+      reader.onerror = function () {
+        settingsMsg.textContent = "Could not read that file. Nothing was changed.";
+        importFile.value = "";
+      };
+      reader.readAsText(file);
+    }
+
     // ---------- Button scanning and selection ----------
 
     function highlight(i) {
@@ -218,7 +289,7 @@
     }
 
     function selectOption(i) {
-      if (!scanning) { return; }   // ignore while the pause is running
+      if (!scanning) { return; }
       scanning = false;
 
       const chosen = options[i];
@@ -381,13 +452,12 @@
       requestAnimationFrame(detectLoop);
     }
 
-    // ---------- Startup ----------
+    // ---------- Startup and buttons ----------
 
     const startSettings = loadSaved();
     showOnSliders(startSettings);
     applySettings(startSettings);
 
-    // Live updates while sliders move
     [sBlink, sScan, sDwell, sGain].forEach(function (el) {
       el.addEventListener("input", function () {
         const s = readSliders();
@@ -409,6 +479,14 @@
       applySettings(DEFAULTS);
       settingsMsg.textContent = "Reset to default values.";
     });
+
+    document.getElementById("exportBtn").addEventListener("click", exportSettings);
+
+    document.getElementById("importBtn").addEventListener("click", function () {
+      importFile.click();
+    });
+
+    importFile.addEventListener("change", handleImport);
 
     highlight(0);
 
